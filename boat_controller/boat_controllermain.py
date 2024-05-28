@@ -1,42 +1,105 @@
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import JointState
+from geometry_msgs.msg import TransformStamped
+from std_msgs.msg import Float32, Float32MultiArray
+import math
+import numpy as np
 
-class ActuationPrioPublisher(Node):
+
+class FormationControllerNode(Node):
+
     def __init__(self):
-        super().__init__('actuation_prio_publisher')  
+        super().__init__('formation_controller')
 
-        # Vessel IDs to Control
-        self.vesselids = ['RAS_TN_DB', 'RAS_TN_OR', 'RAS_TN_GR']  # Update if needed
-        # No publishers attribute
+        # Get the necessary parameters
+        self.declare_parameters(
+            namespace='',
+            parameters=[
+                ('blue_boat_name', 'RAS_TN_DB'),
+                ('orange_boat_name', 'RAS_TN_OR'),
+                ('desired_distance', 2.0),  # Desired distance between boats
+                ('kp_heading', 0.5),  # Heading control proportional gain
+                ('kp_velocity', 0.2)  # Velocity control proportional gain
+            ]
+        )
 
-        # Timer for Control Loop (adjust frequency as needed)
-        self.timer = self.create_timer(0.1, self.control_loop)  
+        # Set up subscribers
+        self.blue_pose_sub = self.create_subscription(
+            TransformStamped,
+            f"/{self.get_parameter('blue_boat_name').value}/pose",
+            self.blue_pose_callback,
+            10
+        )
+        self.orange_pose_sub = self.create_subscription(
+            TransformStamped,
+            f"/{self.get_parameter('orange_boat_name').value}/pose",
+            self.orange_pose_callback,
+            10
+        )
 
-    def control_loop(self):
-        msg = JointState()  # Create a single message for all vessels
+        # Set up publishers
+        self.heading_ref_pub = self.create_publisher(
+            Float32,
+            f"/{self.get_parameter('blue_boat_name').value}/reference/heading",
+            10
+        )
+        self.velocity_ref_pub = self.create_publisher(
+            Float32MultiArray,
+            f"/{self.get_parameter('blue_boat_name').value}/reference/velocity",
+            10
+        )
 
-        for vesselid in self.vesselids:
-            # Append actuator commands for each vessel to the message
-            #SB_aft_thruster_propeller
-            msg.name.extend([       'SB_aft_thruster_propeller', 
-                                    'PS_aft_thruster_propeller', 
-                                    'BOW_thruster_propeller',
-                                    'SB_aft_thruster_joint',
-                                    'PS_aft_thruster_joint'])
-            msg.position.extend([0.0, 0.0, 0.0, 0.0, 0.0])  # Angles (not used)
-            msg.velocity.extend([10000.0, 10000.0, 0.0, 0.0, 0.0])  # RPMs
-            msg.effort.extend([0.0, 0.0, 0.0, 0.0, 0.0])
+        # Initialize pose variables
+        self.blue_pose = None
+        self.orange_pose = None
 
-        # Publish the message to each vessel topic
-        for vesselid in self.vesselids:
-            self.create_publisher(JointState, f'/{vesselid}/reference/actuation_prio', 10).publish(msg)
+    def blue_pose_callback(self, msg):
+        self.blue_pose = msg.transform
+
+        # Only calculate references if both poses are available
+        if self.orange_pose is not None:
+            self.calculate_and_publish_references()
+
+    def orange_pose_callback(self, msg):
+        self.orange_pose = msg.transform
+
+        # Only calculate references if both poses are available
+        if self.blue_pose is not None:
+            self.calculate_and_publish_references()
+
+    def calculate_and_publish_references(self):
+        # Calculate desired heading based on the difference between the poses
+        dx = self.orange_pose.translation.x - self.blue_pose.translation.x
+        dy = self.orange_pose.translation.y - self.blue_pose.translation.y
+        desired_heading = np.arctan2(dy, dx)
+
+        # Calculate distance error
+        distance_error = math.sqrt(dx**2 + dy**2) - self.get_parameter('desired_distance').value
+
+        # Calculate velocity reference based on distance error
+        velocity_ref = self.get_parameter('kp_velocity').value * distance_error
+
+        # Publish references
+        self.heading_ref_pub.publish(Float32(data=desired_heading))
+        self.velocity_ref_pub.publish(Float32MultiArray(data=[velocity_ref,0.0,0.0]))
+
+        # In blue_pose_callback and orange_pose_callback:
+        self.get_logger().info(f"Blue pose received: {self.blue_pose}")
+        self.get_logger().info(f"Orange pose received: {self.orange_pose}")
+
+# In calculate_and_publish_references:
+        self.get_logger().info(f"Desired heading: {desired_heading}, Velocity reference: {velocity_ref}")
 
 def main(args=None):
     rclpy.init(args=args)
-    actuation_prio_publisher = ActuationPrioPublisher()
-    rclpy.spin(actuation_prio_publisher)
+
+    formation_controller = FormationControllerNode()
+
+    rclpy.spin(formation_controller)
+
+    formation_controller.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
