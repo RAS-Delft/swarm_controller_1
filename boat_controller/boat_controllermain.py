@@ -2,7 +2,6 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Float32, Float32MultiArray
-import math
 import numpy as np
 
 class SwarmControllerNode(Node):
@@ -17,10 +16,11 @@ class SwarmControllerNode(Node):
                 ('orange_boat', 'RAS_TN_OR'),
                 ('dark_blue_boat', 'RAS_TN_DB'),
                 ('green_boat', 'RAS_TN_GR'),
-                ('desired_distance', 0.005),  # Desired distance between boats
-                ('separation_distance', 0.0001),  # Minimum separation distance between boats
-                ('kp_heading', 0.0005),  # Heading control proportional gain
-                ('kp_velocity', 0.005)  # Velocity control proportional gain
+                ('desired_distance', 0.8),  # Desired distance between boats
+                ('separation_distance', 0.3),  # Minimum separation distance between boats
+                ('kp_heading', 0.3),  # Heading control proportional gain
+                ('kp_velocity', 0.005),  # Velocity control proportional gain
+                ('max_distance', 3.0)  # Maximum distance from the center of all boats
             ]
         )
 
@@ -97,41 +97,77 @@ class SwarmControllerNode(Node):
     def calculate_and_publish_references(self):
         desired_distance = self.get_parameter('desired_distance').value
         separation_distance = self.get_parameter('separation_distance').value
+        max_distance = self.get_parameter('max_distance').value
 
         positions = {boat: (pose.translation.x, pose.translation.y) for boat, pose in self.poses.items()}
+        velocities = {boat: (vel[0], vel[1]) for boat, vel in self.velocities.items()}
 
-        # Boids algorithm: Calculate velocity and heading for each boat
+        center_of_mass = np.mean([np.array(position) for position in positions.values()], axis=0)
+
+        # For each boat
         for boat in self.boats:
+            xpos_avg, ypos_avg, xvel_avg, yvel_avg = 0, 0, 0, 0
+            neighboring_boids = 0
+            close_dx, close_dy = 0, 0
             position = positions[boat]
-            heading = self.headings[boat]
-            velocity = self.velocities[boat]
 
-            # Separation
-            separation_force = np.array([0.0, 0.0])
+            # For every other boat
             for other_boat in self.boats:
                 if other_boat != boat:
                     other_position = positions[other_boat]
-                    distance = np.linalg.norm(np.array(position) - np.array(other_position))
-                    if distance < separation_distance:
-                        separation_force += np.array(position) - np.array(other_position)
+                    dx = position[0] - other_position[0]
+                    dy = position[1] - other_position[1]
+                    squared_distance = dx * dx + dy * dy
 
-            # Alignment
-            avg_heading = np.mean([self.headings[other_boat] for other_boat in self.boats if other_boat != boat])
+                    # Check if within separation distance
+                    if squared_distance < separation_distance ** 2:
+                        close_dx += dx
+                        close_dy += dy
+                    # Otherwise, consider for alignment and cohesion
+                    else:
+                        xpos_avg += other_position[0]
+                        ypos_avg += other_position[1]
+                        xvel_avg += velocities[other_boat][0]
+                        yvel_avg += velocities[other_boat][1]
+                        neighboring_boids += 1
 
-            # Cohesion
-            center_of_mass = np.mean([positions[other_boat] for other_boat in self.boats if other_boat != boat], axis=0)
-            cohesion_force = center_of_mass - np.array(position)
+            if neighboring_boids > 0:
+                xpos_avg /= neighboring_boids
+                ypos_avg /= neighboring_boids
+                xvel_avg /= neighboring_boids
+                yvel_avg /= neighboring_boids
 
-            # Calculate desired heading and velocity
-            desired_heading = np.arctan2(cohesion_force[1], cohesion_force[0]) + avg_heading + separation_force[1]
-            distance_error = np.linalg.norm(cohesion_force) - desired_distance
+                # Update velocity based on alignment (matching) and cohesion (centering)
+                velocities[boat] = (
+                    velocities[boat][0] + (xpos_avg - position[0]) * self.get_parameter('kp_heading').value + (xvel_avg - velocities[boat][0]) * self.get_parameter('kp_velocity').value,
+                    velocities[boat][1] + (ypos_avg - position[1]) * self.get_parameter('kp_heading').value + (yvel_avg - velocities[boat][1]) * self.get_parameter('kp_velocity').value
+                )
+
+            # Update velocity based on separation (avoidance)
+            velocities[boat] = (
+                velocities[boat][0] + close_dx * self.get_parameter('kp_heading').value,
+                velocities[boat][1] + close_dy * self.get_parameter('kp_heading').value
+            )
+
+            # Check if boat is outside max distance and steer back to center
+            distance_to_center = np.linalg.norm(np.array(position) - center_of_mass)
+            if distance_to_center > max_distance:
+                direction_to_center = center_of_mass - np.array(position)
+                velocities[boat] = (
+                    velocities[boat][0] + direction_to_center[0] * self.get_parameter('kp_heading').value,
+                    velocities[boat][1] + direction_to_center[1] * self.get_parameter('kp_heading').value
+                )
+
+            # Calculate desired heading based on the updated velocity
+            desired_heading = np.arctan2(velocities[boat][1], velocities[boat][0])
+            distance_error = np.linalg.norm(np.array([xpos_avg, ypos_avg]) - np.array(position)) - desired_distance
             velocity_ref = self.get_parameter('kp_velocity').value * distance_error
 
-            # Publish references
+            # Publish the calculated desired heading and velocity reference for the boat
             self.heading_publishers[boat].publish(Float32(data=desired_heading))
             self.velocity_publishers[boat].publish(Float32MultiArray(data=[velocity_ref, 0.0, 0.0]))
 
-            # Logging
+            # Log the desired heading and velocity reference for monitoring
             self.get_logger().info(f"{boat} - Desired heading: {desired_heading}, Velocity reference: {velocity_ref}")
 
 def main(args=None):
