@@ -16,11 +16,11 @@ class SwarmControllerNode(Node):
                 ('orange_boat', 'RAS_TN_OR'),
                 ('dark_blue_boat', 'RAS_TN_DB'),
                 ('green_boat', 'RAS_TN_GR'),
-                ('desired_distance', 0.8),  # Desired distance between boats
-                ('separation_distance', 0.3),  # Minimum separation distance between boats
-                ('kp_heading', 0.3),  # Heading control proportional gain
+                ('desired_distance', 0.09),  # Desired distance between boats
+                ('separation_distance', 0.04),  # Minimum separation distance between boats
+                ('kp_heading', 0.03),  # Heading control proportional gain
                 ('kp_velocity', 0.005),  # Velocity control proportional gain
-                ('max_distance', 3.0)  # Maximum distance from the center of all boats
+                ('max_distance', 0.15)  # Maximum distance from the center of all boats
             ]
         )
 
@@ -106,56 +106,62 @@ class SwarmControllerNode(Node):
 
         # For each boat
         for boat in self.boats:
-            xpos_avg, ypos_avg, xvel_avg, yvel_avg = 0, 0, 0, 0
-            neighboring_boids = 0
-            close_dx, close_dy = 0, 0
             position = positions[boat]
 
-            # For every other boat
-            for other_boat in self.boats:
-                if other_boat != boat:
-                    other_position = positions[other_boat]
-                    dx = position[0] - other_position[0]
-                    dy = position[1] - other_position[1]
-                    squared_distance = dx * dx + dy * dy
-
-                    # Check if within separation distance
-                    if squared_distance < separation_distance ** 2:
-                        close_dx += dx
-                        close_dy += dy
-                    # Otherwise, consider for alignment and cohesion
-                    else:
-                        xpos_avg += other_position[0]
-                        ypos_avg += other_position[1]
-                        xvel_avg += velocities[other_boat][0]
-                        yvel_avg += velocities[other_boat][1]
-                        neighboring_boids += 1
-
-            if neighboring_boids > 0:
-                xpos_avg /= neighboring_boids
-                ypos_avg /= neighboring_boids
-                xvel_avg /= neighboring_boids
-                yvel_avg /= neighboring_boids
-
-                # Update velocity based on alignment (matching) and cohesion (centering)
-                velocities[boat] = (
-                    velocities[boat][0] + (xpos_avg - position[0]) * self.get_parameter('kp_heading').value + (xvel_avg - velocities[boat][0]) * self.get_parameter('kp_velocity').value,
-                    velocities[boat][1] + (ypos_avg - position[1]) * self.get_parameter('kp_heading').value + (yvel_avg - velocities[boat][1]) * self.get_parameter('kp_velocity').value
-                )
-
-            # Update velocity based on separation (avoidance)
-            velocities[boat] = (
-                velocities[boat][0] + close_dx * self.get_parameter('kp_heading').value,
-                velocities[boat][1] + close_dy * self.get_parameter('kp_heading').value
-            )
-
-            # Check if boat is outside max distance and steer back to center
+            # Check if boat is outside max distance and prioritize steering back to center
             distance_to_center = np.linalg.norm(np.array(position) - center_of_mass)
             if distance_to_center > max_distance:
                 direction_to_center = center_of_mass - np.array(position)
+                direction_to_center_normalized = direction_to_center / np.linalg.norm(direction_to_center)
                 velocities[boat] = (
-                    velocities[boat][0] + direction_to_center[0] * self.get_parameter('kp_heading').value,
-                    velocities[boat][1] + direction_to_center[1] * self.get_parameter('kp_heading').value
+                    direction_to_center_normalized[0] * self.get_parameter('kp_heading').value,
+                    direction_to_center_normalized[1] * self.get_parameter('kp_heading').value
+                )
+                self.get_logger().info(f"{boat} is too far from center, prioritizing steering back")
+
+                # Default values when prioritizing returning to center
+                xpos_avg, ypos_avg = center_of_mass
+            else:
+                xpos_avg, ypos_avg, xvel_avg, yvel_avg = 0, 0, 0, 0
+                neighboring_boids = 0
+                close_dx, close_dy = 0, 0
+
+                # For every other boat
+                for other_boat in self.boats:
+                    if other_boat != boat:
+                        other_position = positions[other_boat]
+                        dx = position[0] - other_position[0]
+                        dy = position[1] - other_position[1]
+                        squared_distance = dx * dx + dy * dy
+
+                        # Check if within separation distance
+                        if squared_distance < separation_distance ** 2:
+                            close_dx += dx
+                            close_dy += dy
+                        # Otherwise, consider for alignment and cohesion
+                        else:
+                            xpos_avg += other_position[0]
+                            ypos_avg += other_position[1]
+                            xvel_avg += velocities[other_boat][0]
+                            yvel_avg += velocities[other_boat][1]
+                            neighboring_boids += 1
+
+                if neighboring_boids > 0:
+                    xpos_avg /= neighboring_boids
+                    ypos_avg /= neighboring_boids
+                    xvel_avg /= neighboring_boids
+                    yvel_avg /= neighboring_boids
+
+                    # Update velocity based on alignment (matching) and cohesion (centering)
+                    velocities[boat] = (
+                        velocities[boat][0] + (xpos_avg - position[0]) * self.get_parameter('kp_heading').value + (xvel_avg - velocities[boat][0]) * self.get_parameter('kp_velocity').value,
+                        velocities[boat][1] + (ypos_avg - position[1]) * self.get_parameter('kp_heading').value + (yvel_avg - velocities[boat][1]) * self.get_parameter('kp_velocity').value
+                    )
+
+                # Update velocity based on separation (avoidance)
+                velocities[boat] = (
+                    velocities[boat][0] + close_dx * self.get_parameter('kp_heading').value,
+                    velocities[boat][1] + close_dy * self.get_parameter('kp_heading').value
                 )
 
             # Calculate desired heading based on the updated velocity
