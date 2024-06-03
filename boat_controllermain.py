@@ -17,16 +17,18 @@ class SwarmControllerNode(Node):
                 ('dark_blue_boat', 'RAS_TN_DB'),
                 ('green_boat', 'RAS_TN_GR'),
                 #('lightblue_boat', 'RAS_TN_LB'),
+                #('red_boat', 'RAS_TN_RE'),
                 #('yellow_boat', 'RAS_TN_YE'),
+                #('purple_boat', 'RAS_TN_PU'),
                 ('desired_distance', 2.0),
-                ('separation_distance', 1.0),
+                ('separation_distance', 1.5),
                 ('kp_heading', 0.005),
                 ('kp_velocity', 0.05),
-                ('matching_factor', 0.005),
+                ('matching_factor', 0.2),
                 ('avoid_factor', 0.5),
-                ('centering_factor', 0.05),
-                ('min_speed', 0.1),
-                ('max_speed', 1.0)
+                ('centering_factor', 0.005),
+                ('min_speed', 0.01),
+                ('max_speed', 0.5)  # Reduced max speed for better control
             ]
         )
 
@@ -140,7 +142,7 @@ class SwarmControllerNode(Node):
 
                     # Separation
                     if distance < separation_distance:
-                        separation_force += np.array(position) - np.array(other_position)
+                        separation_force += (np.array(position) - np.array(other_position)) / (distance**2)
                         close_neighbor_count += 1
 
             if neighbor_count > 0:
@@ -152,6 +154,8 @@ class SwarmControllerNode(Node):
 
             if close_neighbor_count > 0:
                 separation_force = separation_force * avoid_factor
+            else:
+                separation_force = np.array([0.0, 0.0])  # No separation force if no neighbors are too close
 
             # Calculate the desired velocity
             desired_velocity = velocity + alignment_force + cohesion_force + separation_force
