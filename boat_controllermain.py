@@ -16,6 +16,8 @@ class SwarmControllerNode(Node):
                 ('orange_boat', 'RAS_TN_OR'),
                 ('dark_blue_boat', 'RAS_TN_DB'),
                 ('green_boat', 'RAS_TN_GR'),
+                #('lightblue_boat', 'RAS_TN_LB'),
+                #('yellow_boat', 'RAS_TN_YE'),
                 ('desired_distance', 2.0),
                 ('separation_distance', 1.0),
                 ('kp_heading', 0.005),
@@ -23,8 +25,8 @@ class SwarmControllerNode(Node):
                 ('matching_factor', 0.005),
                 ('avoid_factor', 0.5),
                 ('centering_factor', 0.05),
-                ('min_speed', 0.01),
-                ('max_speed', 0.1)
+                ('min_speed', 0.1),
+                ('max_speed', 1.0)
             ]
         )
 
@@ -32,7 +34,9 @@ class SwarmControllerNode(Node):
         self.boats = [
             self.get_parameter('orange_boat').value,
             self.get_parameter('dark_blue_boat').value,
-            self.get_parameter('green_boat').value
+            self.get_parameter('green_boat').value,
+            #self.get_parameter('lightblue_boat').value,
+            #self.get_parameter('yellow_boat').value
         ]
 
         # Set up subscribers
