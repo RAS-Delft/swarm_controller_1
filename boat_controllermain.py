@@ -13,22 +13,23 @@ class SwarmControllerNode(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                #('orange_boat', 'RAS_TN_OR'),
+                ('orange_boat', 'RAS_TN_OR'),
                 ('dark_blue_boat', 'RAS_TN_DB'),
                 ('green_boat', 'RAS_TN_GR'),
                 ('lightblue_boat', 'RAS_TN_LB'),
                 ('red_boat', 'RAS_TN_RE'),
                 ('yellow_boat', 'RAS_TN_YE'),
                 ('purple_boat', 'RAS_TN_PU'),
-                ('desired_distance', 3.0),
-                ('separation_distance', 2.5),
+                ('desired_distance', 4),
+                ('separation_distance', 3),
                 ('kp_heading', 0.005),
-                ('kp_velocity', 0.03),
-                ('matching_factor', 0.15),
-                ('avoid_factor', 0.60),
-                ('centering_factor', 0.05),
-                ('min_speed', 0.03),
-                ('max_speed', 0.065)  # Reduced max speed for better control
+                ('kp_velocity', 0.15),
+                ('matching_factor', 0.6),
+                ('avoid_factor', 0.3),
+                ('centering_factor', 0.005),
+                ('goal_factor', 0.01),  # New parameter for goal seeking
+                ('min_speed', 0.01),
+                ('max_speed', 0.2)  # Reduced max speed for better control
             ]
         )
 
@@ -39,8 +40,9 @@ class SwarmControllerNode(Node):
             self.get_parameter('green_boat').value,
             self.get_parameter('lightblue_boat').value,
             self.get_parameter('yellow_boat').value,
+            self.get_parameter('red_boat').value,
             self.get_parameter('purple_boat').value,
-            self.get_parameter('red_boat').value
+            self.get_parameter('orange_boat').value
         ]
 
         # Set up subscribers
@@ -112,6 +114,7 @@ class SwarmControllerNode(Node):
         matching_factor = self.get_parameter('matching_factor').value
         avoid_factor = self.get_parameter('avoid_factor').value
         centering_factor = self.get_parameter('centering_factor').value
+        goal_factor = self.get_parameter('goal_factor').value  # Get the goal seeking factor
         min_speed = self.get_parameter('min_speed').value
         max_speed = self.get_parameter('max_speed').value
 
@@ -126,6 +129,7 @@ class SwarmControllerNode(Node):
             separation_force = np.array([0.0, 0.0])
             alignment_force = np.array([0.0, 0.0])
             cohesion_force = np.array([0.0, 0.0])
+            goal_force = np.array([0.0, 0.0])  # Initialize the goal seeking force
             neighbor_count = 0
             close_neighbor_count = 0
 
@@ -159,8 +163,12 @@ class SwarmControllerNode(Node):
             else:
                 separation_force = np.array([0.0, 0.0])  # No separation force if no neighbors are too close
 
+            # Goal seeking force towards (0,0)
+            goal_position = np.array([0.0, 0.0])
+            goal_force = (goal_position - np.array(position)) * goal_factor
+
             # Calculate the desired velocity
-            desired_velocity = velocity + alignment_force + cohesion_force + separation_force
+            desired_velocity = velocity + alignment_force + cohesion_force + separation_force + goal_force
             desired_speed = np.linalg.norm(desired_velocity)
             if desired_speed > 0:
                 desired_heading = np.arctan2(desired_velocity[1], desired_velocity[0])
