@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, PointStamped
 from std_msgs.msg import Float32, Float32MultiArray
 import numpy as np
 
@@ -19,7 +19,6 @@ class SwarmControllerNode(Node):
                 ('lightblue_boat', 'RAS_TN_LB'),
                 #('red_boat', 'RAS_TN_RE'),
                 ('yellow_boat', 'RAS_TN_YE'),
-                #('purple_boat', 'RAS_TN_PU'),
                 ('desired_distance', 3),
                 ('separation_distance', 2),
                 ('kp_heading', 0.005),
@@ -68,6 +67,14 @@ class SwarmControllerNode(Node):
             ) for boat in self.boats
         }
 
+        # Subscriber for the clicked point in rviz2
+        self.goal_subscriber = self.create_subscription(
+            PointStamped,
+            '/clicked_point',
+            self.goal_callback,
+            10
+        )
+
         # Set up publishers
         self.heading_publishers = {
             boat: self.create_publisher(
@@ -88,6 +95,7 @@ class SwarmControllerNode(Node):
         self.poses = {boat: None for boat in self.boats}
         self.headings = {boat: None for boat in self.boats}
         self.velocities = {boat: None for boat in self.boats}
+        self.goal_position = None  # Variable to store the clicked goal position
 
     def pose_callback(self, msg, boat):
         self.poses[boat] = msg.transform
@@ -100,6 +108,10 @@ class SwarmControllerNode(Node):
     def velocity_callback(self, msg, boat):
         self.velocities[boat] = msg.data
         self.check_all_data_received()
+
+    def goal_callback(self, msg):
+        self.goal_position = np.array([msg.point.x, msg.point.y])
+        self.get_logger().info(f"New goal position: {self.goal_position}")
 
     def check_all_data_received(self):
         if all(self.poses.values()) and all(self.headings.values()) and all(self.velocities.values()):
@@ -160,9 +172,9 @@ class SwarmControllerNode(Node):
             else:
                 separation_force = np.array([0.0, 0.0])  # No separation force if no neighbors are too close
 
-            # Goal seeking force towards (0,0)
-            goal_position = np.array([0.0, 0.0])
-            goal_force = (goal_position - np.array(position)) * goal_factor
+            # Goal seeking force towards the clicked point if available
+            if self.goal_position is not None:
+                goal_force = (self.goal_position - np.array(position)) * goal_factor
 
             # Calculate the desired velocity
             desired_velocity = velocity + alignment_force + cohesion_force + separation_force + goal_force
