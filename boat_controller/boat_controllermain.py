@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import TransformStamped, PointStamped
 from std_msgs.msg import Float32, Float32MultiArray
 import numpy as np
 
@@ -13,18 +13,18 @@ class SwarmControllerNode(Node):
         self.declare_parameters(
             namespace='',
             parameters=[
-                #('orange_boat', 'RAS_TN_OR'),
+                ('orange_boat', 'RAS_TN_OR'),
                 ('dark_blue_boat', 'RAS_TN_DB'),
                 ('green_boat', 'RAS_TN_GR'),
                 ('lightblue_boat', 'RAS_TN_LB'),
-                #('red_boat', 'RAS_TN_RE'),
+                ('red_boat', 'RAS_TN_RE'),
                 ('yellow_boat', 'RAS_TN_YE'),
-                #('purple_boat', 'RAS_TN_PU'),
-                ('desired_distance', 3),
-                ('separation_distance', 2),
+                ('purple_boat', 'RAS_TN_PU'),
+                ('desired_distance', 4),
+                ('separation_distance', 3),
                 ('kp_heading', 0.005),
-                ('kp_velocity', 0.1),
-                ('matching_factor', 0.5),
+                ('kp_velocity', 0.15),
+                ('matching_factor', 0.6),
                 ('avoid_factor', 0.3),
                 ('centering_factor', 0.005),
                 ('goal_factor', 0.01),  # New parameter for goal seeking
@@ -35,11 +35,15 @@ class SwarmControllerNode(Node):
 
         # Boat identifiers
         self.boats = [
-            #self.get_parameter('orange_boat').value,
+            self.get_parameter('orange_boat').value,
             self.get_parameter('dark_blue_boat').value,
             self.get_parameter('green_boat').value,
             self.get_parameter('lightblue_boat').value,
-            self.get_parameter('yellow_boat').value
+            self.get_parameter('yellow_boat').value,
+            self.get_parameter('red_boat').value,
+            self.get_parameter('purple_boat').value
+
+
         ]
 
         # Set up subscribers
@@ -68,6 +72,14 @@ class SwarmControllerNode(Node):
             ) for boat in self.boats
         }
 
+        # Subscriber for the clicked point in rviz2
+        self.goal_subscriber = self.create_subscription(
+            PointStamped,
+            '/clicked_point',
+            self.goal_callback,
+            10
+        )
+
         # Set up publishers
         self.heading_publishers = {
             boat: self.create_publisher(
@@ -88,6 +100,7 @@ class SwarmControllerNode(Node):
         self.poses = {boat: None for boat in self.boats}
         self.headings = {boat: None for boat in self.boats}
         self.velocities = {boat: None for boat in self.boats}
+        self.goal_position = None  # Variable to store the clicked goal position
 
     def pose_callback(self, msg, boat):
         self.poses[boat] = msg.transform
@@ -100,6 +113,10 @@ class SwarmControllerNode(Node):
     def velocity_callback(self, msg, boat):
         self.velocities[boat] = msg.data
         self.check_all_data_received()
+
+    def goal_callback(self, msg):
+        self.goal_position = np.array([msg.point.x, msg.point.y])
+        self.get_logger().info(f"New goal position: {self.goal_position}")
 
     def check_all_data_received(self):
         if all(self.poses.values()) and all(self.headings.values()) and all(self.velocities.values()):
@@ -136,44 +153,37 @@ class SwarmControllerNode(Node):
                     other_velocity = velocities[other_boat]
                     distance = np.linalg.norm(np.array(position) - np.array(other_position))
 
-                    # Apply different logic based on distance
+                    # Alignment
+                    alignment_force += other_velocity
+                    neighbor_count += 1
+
+                    # Cohesion
+                    cohesion_force += np.array(other_position)
+
+                    # Separation
                     if distance < separation_distance:
-                        # Separation force if too close
                         separation_force += (np.array(position) - np.array(other_position)) / (distance**2)
                         close_neighbor_count += 1
-                    elif separation_distance <= distance <= desired_distance:
-                        # Alignment force if within the desired range
-                        alignment_force += other_velocity
-                        neighbor_count += 1
-                    else:
-                        # Alignment and cohesion forces if outside the desired range
-                        alignment_force += other_velocity
-                        cohesion_force += (np.array(other_position) - np.array(position)) * ((distance - desired_distance) / desired_distance)
-                        neighbor_count += 1
 
             if neighbor_count > 0:
                 alignment_force /= neighbor_count
                 alignment_force = (alignment_force - velocity) * matching_factor
 
                 cohesion_force /= neighbor_count
-                cohesion_force = cohesion_force * centering_factor
+                cohesion_force = (cohesion_force - np.array(position)) * centering_factor
 
             if close_neighbor_count > 0:
                 separation_force = separation_force * avoid_factor
             else:
                 separation_force = np.array([0.0, 0.0])  # No separation force if no neighbors are too close
 
-            if separation_distance <= distance <= desired_distance:
-                cohesion_force = np.array([0.0, 0.0])  # No cohesion force if within desired range
+            # Goal seeking force towards the clicked point if available
+            if self.goal_position is not None:
+                goal_force = (self.goal_position - np.array(position)) * goal_factor
 
-            # Goal seeking force towards (0,0)
-            goal_position = np.array([0.0, 0.0])
-            goal_force = (goal_position - np.array(position)) * goal_factor
-
-            # Calculate the desired velocity, ensuring separation has priority
+            # Calculate the desired velocity
             desired_velocity = velocity + alignment_force + cohesion_force + separation_force + goal_force
             desired_speed = np.linalg.norm(desired_velocity)
-
             if desired_speed > 0:
                 desired_heading = np.arctan2(desired_velocity[1], desired_velocity[0])
             else:
@@ -186,16 +196,6 @@ class SwarmControllerNode(Node):
             elif desired_speed < min_speed:
                 desired_velocity = (desired_velocity / desired_speed) * min_speed
                 desired_speed = min_speed
-
-            # Ensure the separation force is effective by scaling if too close
-            if close_neighbor_count > 0:
-                separation_velocity = separation_force + velocity
-                separation_speed = np.linalg.norm(separation_velocity)
-                if separation_speed > max_speed:
-                    separation_velocity = (separation_velocity / separation_speed) * max_speed
-                elif separation_speed < min_speed:
-                    separation_velocity = (separation_velocity / separation_speed) * min_speed
-                desired_velocity = separation_velocity
 
             # Publish references
             self.heading_publishers[boat].publish(Float32(data=desired_heading))
