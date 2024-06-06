@@ -4,10 +4,20 @@ from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Float32, Float32MultiArray
 import numpy as np
 
+from rclpy.qos import QoSProfile
+from rclpy.qos import QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
+
+
 class SwarmControllerNode(Node):
 
     def __init__(self):
         super().__init__('swarm_controller')
+        custom_qos_profile = QoSProfile(
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            durability=QoSDurabilityPolicy.VOLATILE
+        )
 
         # Get the necessary parameters
         self.declare_parameters(
@@ -20,11 +30,11 @@ class SwarmControllerNode(Node):
                 ('red_boat', 'RAS_TN_RE'),
                 ('yellow_boat', 'RAS_TN_YE'),
                 ('purple_boat', 'RAS_TN_PU'),
-                ('desired_distance', 4),
-                ('separation_distance', 3),
+                ('desired_distance', 3),
+                ('separation_distance', 2),
                 ('kp_heading', 0.005),
-                ('kp_velocity', 0.15),
-                ('matching_factor', 0.6),
+                ('kp_velocity', 0.1),
+                ('matching_factor', 0.5),
                 ('avoid_factor', 0.3),
                 ('centering_factor', 0.005),
                 ('goal_factor', 0.01),  # New parameter for goal seeking
@@ -35,14 +45,13 @@ class SwarmControllerNode(Node):
 
         # Boat identifiers
         self.boats = [
-            #self.get_parameter('orange_boat').value,
+            self.get_parameter('orange_boat').value,
             self.get_parameter('dark_blue_boat').value,
             self.get_parameter('green_boat').value,
             self.get_parameter('lightblue_boat').value,
             self.get_parameter('yellow_boat').value,
-            self.get_parameter('red_boat').value,
             self.get_parameter('purple_boat').value,
-            self.get_parameter('orange_boat').value
+            self.get_parameter('red_boat').value
         ]
 
         # Set up subscribers
@@ -51,7 +60,7 @@ class SwarmControllerNode(Node):
                 TransformStamped,
                 f"/{boat}/pose",
                 lambda msg, boat=boat: self.pose_callback(msg, boat),
-                10
+                custom_qos_profile
             ) for boat in self.boats
         }
         self.heading_subscribers = {
@@ -59,7 +68,7 @@ class SwarmControllerNode(Node):
                 Float32,
                 f"/{boat}/telemetry/heading",
                 lambda msg, boat=boat: self.heading_callback(msg, boat),
-                10
+                custom_qos_profile
             ) for boat in self.boats
         }
         self.velocity_subscribers = {
@@ -67,7 +76,7 @@ class SwarmControllerNode(Node):
                 Float32MultiArray,
                 f"/{boat}/state/velocity",
                 lambda msg, boat=boat: self.velocity_callback(msg, boat),
-                10
+                custom_qos_profile
             ) for boat in self.boats
         }
 
@@ -76,15 +85,24 @@ class SwarmControllerNode(Node):
             boat: self.create_publisher(
                 Float32,
                 f"/{boat}/reference/heading",
-                10
+                custom_qos_profile
             ) for boat in self.boats
         }
         self.velocity_publishers = {
             boat: self.create_publisher(
                 Float32MultiArray,
                 f"/{boat}/reference/velocity",
-                10
+                custom_qos_profile
             ) for boat in self.boats
+        }
+
+        #Create distance publishers
+        self.distance_publishers = {
+            (boat1, boat2): self.create_publisher(
+                Float32,
+                f"/distance/{boat1}_{boat2}",
+                custom_qos_profile
+            ) for i, boat1 in enumerate(self.boats) for boat2 in self.boats[i+1:]
         }
 
         # Initialize state variables
@@ -139,37 +157,44 @@ class SwarmControllerNode(Node):
                     other_velocity = velocities[other_boat]
                     distance = np.linalg.norm(np.array(position) - np.array(other_position))
 
-                    # Alignment
-                    alignment_force += other_velocity
-                    neighbor_count += 1
-
-                    # Cohesion
-                    cohesion_force += np.array(other_position)
-
-                    # Separation
+                    # Apply different logic based on distance
                     if distance < separation_distance:
+                        # Separation force if too close
                         separation_force += (np.array(position) - np.array(other_position)) / (distance**2)
                         close_neighbor_count += 1
+                    elif separation_distance <= distance <= desired_distance:
+                        # Alignment force if within the desired range
+                        alignment_force += other_velocity
+                        neighbor_count += 1
+                    else:
+                        # Alignment and cohesion forces if outside the desired range
+                        alignment_force += other_velocity
+                        cohesion_force += (np.array(other_position) - np.array(position)) * ((distance - desired_distance) / desired_distance)
+                        neighbor_count += 1
 
             if neighbor_count > 0:
                 alignment_force /= neighbor_count
                 alignment_force = (alignment_force - velocity) * matching_factor
 
                 cohesion_force /= neighbor_count
-                cohesion_force = (cohesion_force - np.array(position)) * centering_factor
+                cohesion_force = cohesion_force * centering_factor
 
             if close_neighbor_count > 0:
                 separation_force = separation_force * avoid_factor
             else:
                 separation_force = np.array([0.0, 0.0])  # No separation force if no neighbors are too close
 
+            if separation_distance <= distance <= desired_distance:
+                cohesion_force = np.array([0.0, 0.0])  # No cohesion force if within desired range
+
             # Goal seeking force towards (0,0)
             goal_position = np.array([0.0, 0.0])
             goal_force = (goal_position - np.array(position)) * goal_factor
 
-            # Calculate the desired velocity
+            # Calculate the desired velocity, ensuring separation has priority
             desired_velocity = velocity + alignment_force + cohesion_force + separation_force + goal_force
             desired_speed = np.linalg.norm(desired_velocity)
+
             if desired_speed > 0:
                 desired_heading = np.arctan2(desired_velocity[1], desired_velocity[0])
             else:
@@ -183,12 +208,30 @@ class SwarmControllerNode(Node):
                 desired_velocity = (desired_velocity / desired_speed) * min_speed
                 desired_speed = min_speed
 
+            # Ensure the separation force is effective by scaling if too close
+            if close_neighbor_count > 0:
+                separation_velocity = separation_force + velocity
+                separation_speed = np.linalg.norm(separation_velocity)
+                if separation_speed > max_speed:
+                    separation_velocity = (separation_velocity / separation_speed) * max_speed
+                elif separation_speed < min_speed:
+                    separation_velocity = (separation_velocity / separation_speed) * min_speed
+                desired_velocity = separation_velocity
+
             # Publish references
             self.heading_publishers[boat].publish(Float32(data=desired_heading))
             self.velocity_publishers[boat].publish(Float32MultiArray(data=[desired_speed, 0.0, 0.0]))
 
             # Logging
             self.get_logger().info(f"{boat} - Desired heading: {desired_heading}, Velocity reference: {desired_speed}")
+     
+        #calculate and publish distances
+        self.publish_distances(positions)
+
+    def publish_distances(self, positions):
+        for (boat1, boat2), publisher in self.distance_publishers.items():
+            distance = np.linalg.norm(np.array(positions[boat1]) - np.array(positions[boat2]))
+            publisher.publish(Float32(data=distance))
 
 def main(args=None):
     rclpy.init(args=args)
