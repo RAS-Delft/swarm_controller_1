@@ -3,9 +3,26 @@ from rclpy.node import Node
 from geometry_msgs.msg import TransformStamped, PointStamped
 from std_msgs.msg import Float32, Float32MultiArray
 import numpy as np
+from tf2_msgs.msg import TFMessage
 
 from rclpy.qos import QoSProfile
 from rclpy.qos import QoSReliabilityPolicy, QoSHistoryPolicy, QoSDurabilityPolicy
+
+def ros2_transform_to_yaw(transform:TransformStamped):
+    """uses the quaternion from a ros2 transform to calculate the yaw"""
+    x = transform.transform.rotation.x
+    y = transform.transform.rotation.y
+    z = transform.transform.rotation.z
+    w = transform.transform.rotation.w
+    t3 = +2.0 * (w * z + x * y)
+    t4 = +1.0 - 2.0 * (y * y + z * z)
+
+    a = np.arctan2(t3, t4)
+    # map between 0 and 2pi
+    if a < 0:
+        a += 2*np.pi
+
+    return a
 
 
 class SwarmControllerNode(Node):
@@ -70,6 +87,13 @@ class SwarmControllerNode(Node):
                 custom_qos_profile
             ) for boat in self.boats
         }
+        self.tf_subscriber = self.create_subscription(
+            TFMessage,
+            '/tf',
+            self.tf_callback,
+            custom_qos_profile
+        )
+
         self.velocity_subscribers = {
             boat: self.create_subscription(
                 Float32MultiArray,
@@ -118,24 +142,24 @@ class SwarmControllerNode(Node):
         self.velocities = {boat: None for boat in self.boats}
         self.goal_position = None  # Variable to store the clicked goal position
 
-    def pose_callback(self, msg, boat):
-        self.poses[boat] = msg.transform
-        self.check_all_data_received()
-
-    def heading_callback(self, msg, boat):
-        self.headings[boat] = msg.data
-        self.check_all_data_received()
-
+    """
+    Registers ships' poses in the poses dictionary and checks if all data is received.
+    """
+    def tf_callback(self, msg):
+        for transform in msg.transforms:
+            for i in range(0, self.max_boat_index):
+                if self.base_link_name[i] == transform.child_frame_id:
+                    self.poses[i] = transform
+                    self.headings[i] = ros2_transform_to_yaw(transform)
+                    if i == self.boat_nr:
+                        self.calculate_and_publish_references()
+        
     def velocity_callback(self, msg, boat):
         self.velocities[boat] = msg.data
-        self.check_all_data_received()
 
     def goal_callback(self, msg):
         self.goal_position = np.array([msg.point.x, msg.point.y])
         self.get_logger().info(f"New goal position: {self.goal_position}")
-
-    def check_all_data_received(self):
-        self.calculate_and_publish_references()
 
     def calculate_and_publish_references(self):
 
