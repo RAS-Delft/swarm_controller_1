@@ -70,9 +70,8 @@ class SwarmControllerNode(Node):
             self.get_parameter('purple_boat').value,
             self.get_parameter('red_boat').value
         ]
-
         # Set max_boat_index to the number of boats
-        self.max_boat_index = len(self.boats)-1
+        self.n_boats = len(self.boats)
 
         # Figure out my name as namespace (remove the leading slash)
         self.vessel_id = self.get_namespace().replace("/", "")
@@ -96,14 +95,15 @@ class SwarmControllerNode(Node):
             custom_qos_profile
         )
 
-        self.velocity_subscribers = {
-            boat: self.create_subscription(
-                Float32MultiArray,
-                f"/{boat}/state/velocity",
-                lambda msg, boat=boat: self.velocity_callback(msg, boat),
-                custom_qos_profile
-            ) for boat in self.boats
-        }
+        self.velocity_subscribers = []
+        # Create subscribers and store them in the list
+        for boatnr in range(self.n_boats):
+            self.velocity_subscribers.append(
+                self.create_subscription(
+                    Float32MultiArray,
+                    f"/{self.boats[boatnr]}/state/velocity",
+                    lambda msg, boat=boatnr: self.velocity_callback(msg, boat),
+                    custom_qos_profile ) )
 
         # Subscriber for the clicked point in rviz2
         self.goal_subscriber = self.create_subscription(
@@ -114,25 +114,22 @@ class SwarmControllerNode(Node):
         )
 
         # Set up publishers
-        self.heading_publishers = {
-            boat: self.create_publisher(
+        self.heading_ref_publisher = self.create_publisher(
                 Float32,
-                f"/{boat}/reference/heading",
-                custom_qos_profile
-            ) for boat in self.boats
-        }
-        self.velocity_publishers = {
-            boat: self.create_publisher(
+                f"/{self.vessel_id}/reference/heading",
+                custom_qos_profile)
+
+        self.velocity_ref_publisher = self.create_publisher(
                 Float32MultiArray,
-                f"/{boat}/reference/velocity",
-                custom_qos_profile
-            ) for boat in self.boats
-        }
+                f"/{self.vessel_id}/reference/velocity",
+                custom_qos_profile) 
 
         # Initialize state variables
-        self.poses = {boat: None for boat in self.boats}
-        self.headings = {boat: None for boat in self.boats}
-        self.velocities = {boat: None for boat in self.boats}
+        self.poses = [TransformStamped() for _ in range(self.n_boats)]
+        self.headings = np.zeros((len(self.boats), 1))
+        self.velocities = np.zeros((len(self.boats), 3))
+
+
         self.goal_position = None  # Variable to store the clicked goal position
 
     """
@@ -265,10 +262,10 @@ class SwarmControllerNode(Node):
             msg_speed = Float32MultiArray(data=[desired_speed, 0.0, 0.0])
 
             if desired_heading is not None:
-                self.heading_publishers[boat].publish(msg_heading)
+                self.heading_ref_publisher[boat].publish(msg_heading)
 
             if desired_speed is not None:
-                self.velocity_publishers[boat].publish(msg_speed)
+                self.velocity_ref_publisher[boat].publish(msg_speed)
 
             self.get_logger().info(f"{boat} - Desired heading: {desired_heading}, Velocity reference: {desired_speed}")
 
