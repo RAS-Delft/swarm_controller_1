@@ -83,7 +83,7 @@ class SwarmControllerNode(Node):
         self.get_logger().info(f"Vessel ID: {self.vessel_id}, Boat number: {self.boat_nr}")
 
         # set array of names of the frames that are the hulls of the boats
-        self.base_link_name = [f"/{boat}{self.get_parameter('base_link_suffix').value}" for boat in self.boatNames]
+        self.base_link_name = [f"{boat}{self.get_parameter('base_link_suffix').value}" for boat in self.boatNames]
 
         # Make 1 pose subscriber on /tf
         self.tf_subscriber = self.create_subscription(
@@ -123,7 +123,8 @@ class SwarmControllerNode(Node):
                 custom_qos_profile) 
 
         # Initialize state variables, which are updated by the callbacks.
-        # They are 'None' until they are received and replaced with a value.
+        # They are 'None' until they are received and replaced with a value. 
+        # We can check for 'None' to see if we have received data on that boat.
         self.poses = [None for _ in range(self.n_boats)] # Datatype: array of TransformStamped
         self.headings = [None for _ in range(self.n_boats)] # Datatype: array of float
         self.velocities = [None for _ in range(self.n_boats)] # Datatype: array of Float32MultiArray
@@ -139,14 +140,17 @@ class SwarmControllerNode(Node):
         self.create_timer(5.0, self.report_status)
         self.last_timestamp_reported = self.get_clock().now()
 
+    """
+    Reports metrics on the frequency of the callbacks, giving an indication of the performance of the node
+    """
     def report_status(self):
         now = self.get_clock().now()
         dt = now - self.last_timestamp_reported
-
-        f_tf = float(self.tr_tf_callback) / dt.nanoseconds * 1e-9
-        f_tf_ships = float(self.tr_tf_callback_ship_detected) / dt.nanoseconds * 1e-9
-        f_velocity = float(self.tr_velocity_callback_total) / dt.nanoseconds * 1e-9
-        f_runcontrols = float(self.tr_calculate_and_publish_references) / dt.nanoseconds * 1e-9
+        
+        f_tf = float(self.tr_tf_callback) / float(dt.nanoseconds * 1e-9)
+        f_tf_ships = float(self.tr_tf_callback_ship_detected) / float(dt.nanoseconds * 1e-9)
+        f_velocity = float(self.tr_velocity_callback_total) / float(dt.nanoseconds * 1e-9)
+        f_runcontrols = float(self.tr_calculate_and_publish_references) / float(dt.nanoseconds * 1e-9)
 
         # report the status of the calculated frequencies
         self.get_logger().info(f"Diagnostics: f_tf: {f_tf:.2f} Hz, f_tf_ships: {f_tf_ships:.2f} Hz, f_velocity: {f_velocity:.2f} Hz, f_runcontrols: {f_runcontrols:.2f} Hz")
@@ -160,11 +164,9 @@ class SwarmControllerNode(Node):
 
 
 
-
-        
-
     """
-    Registers ships' poses in the poses dictionary and checks if all data is received.
+    Registers ships' poses in the poses array
+    Proceeds to calculate the desired heading and speed for the ship if its own pose is received
     """
     def tf_callback(self, msg: TFMessage):
         self.tr_tf_callback += 1
@@ -176,15 +178,32 @@ class SwarmControllerNode(Node):
                     self.headings[i] = ros2_transform_to_yaw(transform)
                     if i == self.boat_nr: # Only control if its own pose is received
                         self.calculate_and_publish_references()
+                    break
         
+    """
+    Registers the velocities of the ships in the velocities array
+    """
     def velocity_callback(self, msg: Float32MultiArray, boatnr: int):
         self.tr_velocity_callback_total += 1
-        self.velocities[boatnr] = msg.data
 
+        # select only the first two elements. Ignore yaw rate here
+        self.velocities[boatnr] = np.array(msg.data)[0:2]
+
+    """
+    Registers the target clicked point
+    """
     def goal_callback(self, msg:PointStamped):
         self.goal_position = np.array([msg.point.x, msg.point.y])
         self.get_logger().info(f"New goal position: {self.goal_position}")
 
+
+    """
+    The core of boids algorithm, where it runs controls for this ship by:
+      - looping over nearby boats
+      - adding resultant forces based on boids behavior
+      - formulate the desired/reference heading and speed
+      - publish the reference heading and speed
+    """
     def calculate_and_publish_references(self):
         self.tr_calculate_and_publish_references += 1
         desired_distance = self.get_parameter('desired_distance').value
@@ -240,6 +259,7 @@ class SwarmControllerNode(Node):
                                 cohesion_force += (other_position - position) * ((distance - desired_distance) / desired_distance)
                             neighbor_count += 1
 
+
         if neighbor_count > 0:
             alignment_force /= neighbor_count
             if self.velocities is not None:
@@ -252,14 +272,14 @@ class SwarmControllerNode(Node):
             separation_force = separation_force * avoid_factor
         else:
             separation_force = np.array([0.0, 0.0])
-
         if self.goal_position is not None:
             goal_force = (self.goal_position - np.array(position)) * goal_factor
     
         if self.velocities[self.boat_nr] is not None:
-            velocity = np.array(self.velocities[self.boat_nr])
+            velocity = np.array(self.velocities[self.boat_nr]) # get xy velocity and not yaw rate
         else:
             velocity = np.array([0.0, 0.0])
+        
         desired_velocity = velocity + alignment_force + cohesion_force + separation_force + goal_force
         desired_speed = np.linalg.norm(desired_velocity)
 
@@ -288,7 +308,7 @@ class SwarmControllerNode(Node):
         elif desired_speed < min_speed and desired_speed != 0:
             desired_velocity = (desired_velocity / desired_speed) * min_speed
             desired_speed = min_speed
-
+    
         if close_neighbor_count > 0:
             separation_velocity = separation_force + velocity
             separation_speed = np.linalg.norm(separation_velocity)
@@ -307,7 +327,7 @@ class SwarmControllerNode(Node):
         if desired_speed is not None:
             self.velocity_ref_publisher.publish(msg_speed)
 
-        self.get_logger().info(f"{self.base_link_name} Published:- Desired heading: {desired_heading}, Velocity reference: {desired_speed}")
+        #self.get_logger().info(f"{self.boatNames[self.boat_nr]} Published:- Desired heading: {desired_heading}, Velocity reference: {desired_speed}")
 
 def main(args=None):
     rclpy.init(args=args)
