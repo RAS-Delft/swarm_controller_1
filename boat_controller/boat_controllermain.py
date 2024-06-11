@@ -24,7 +24,6 @@ def ros2_transform_to_yaw(transform:TransformStamped):
 
     return a
 
-
 class SwarmControllerNode(Node):
 
     def __init__(self):
@@ -61,7 +60,7 @@ class SwarmControllerNode(Node):
         )
 
         # Boat identifiers
-        self.boats = [
+        self.boatNames = [
             self.get_parameter('orange_boat').value,
             self.get_parameter('dark_blue_boat').value,
             self.get_parameter('green_boat').value,
@@ -70,22 +69,21 @@ class SwarmControllerNode(Node):
             self.get_parameter('purple_boat').value,
             self.get_parameter('red_boat').value
         ]
+
         # Set max_boat_index to the number of boats
-        self.n_boats = len(self.boats)
+        self.n_boats = len(self.boatNames)
 
         # Figure out my name as namespace (remove the leading slash)
         self.vessel_id = self.get_namespace().replace("/", "")
 
-        # Figure out which of the self.boats I am, and set it to self.boat_nr
-        self.boat_nr = self.boats.index(self.vessel_id)
+        # Figure out which of the self.boatNames I am, and set it to self.boat_nr
+        self.boat_nr = self.boatNames.index(self.vessel_id)
+
+        # Print to inform which boat this is, and if detection went well
         self.get_logger().info(f"Vessel ID: {self.vessel_id}, Boat number: {self.boat_nr}")
 
-
-        # Set base_link_ suffix
-        self.base_link_suffix = self.get_parameter('base_link_suffix').value
-
-        # set base link name array
-        self.base_link_name = [f"/{boat}{self.base_link_suffix}" for boat in self.boats]
+        # set array of names of the frames that are the hulls of the boats
+        self.base_link_name = [f"/{boat}{self.get_parameter('base_link_suffix').value}" for boat in self.boatNames]
 
         # Make 1 pose subscriber on /tf
         self.tf_subscriber = self.create_subscription(
@@ -101,7 +99,7 @@ class SwarmControllerNode(Node):
             self.velocity_subscribers.append(
                 self.create_subscription(
                     Float32MultiArray,
-                    f"/{self.boats[boatnr]}/state/velocity",
+                    f"/{self.boatNames[boatnr]}/state/velocity",
                     lambda msg, boat=boatnr: self.velocity_callback(msg, boat),
                     custom_qos_profile ) )
 
@@ -113,7 +111,7 @@ class SwarmControllerNode(Node):
             10
         )
 
-        # Set up publishers
+        # Set up output publishers
         self.heading_ref_publisher = self.create_publisher(
                 Float32,
                 f"/{self.vessel_id}/reference/heading",
@@ -124,28 +122,63 @@ class SwarmControllerNode(Node):
                 f"/{self.vessel_id}/reference/velocity",
                 custom_qos_profile) 
 
-        # Initialize state variables
-        self.poses = [None for _ in range(self.n_boats)]
-        self.headings = [None for _ in range(self.n_boats)]
-        self.velocities = [None for _ in range(self.n_boats)]
+        # Initialize state variables, which are updated by the callbacks.
+        # They are 'None' until they are received and replaced with a value.
+        self.poses = [None for _ in range(self.n_boats)] # Datatype: array of TransformStamped
+        self.headings = [None for _ in range(self.n_boats)] # Datatype: array of float
+        self.velocities = [None for _ in range(self.n_boats)] # Datatype: array of Float32MultiArray
+        self.goal_position = None  # Variable to store the clicked goal position, Datatype: 1x2 numpy array
 
-        self.goal_position = None  # Variable to store the clicked goal position
+        # make a list of counters for the number of callbacks ran
+        self.tr_tf_callback = 0
+        self.tr_tf_callback_ship_detected = 0
+        self.tr_velocity_callback_total = 0
+        self.tr_calculate_and_publish_references = 0
+
+        # make a timer that periodically reports status at 0.2 Hz
+        self.create_timer(5.0, self.report_status)
+        self.last_timestamp_reported = self.get_clock().now()
+
+    def report_status(self):
+        now = self.get_clock().now()
+        dt = now - self.last_timestamp_reported
+
+        f_tf = float(self.tr_tf_callback) / dt.nanoseconds * 1e-9
+        f_tf_ships = float(self.tr_tf_callback_ship_detected) / dt.nanoseconds * 1e-9
+        f_velocity = float(self.tr_velocity_callback_total) / dt.nanoseconds * 1e-9
+        f_runcontrols = float(self.tr_calculate_and_publish_references) / dt.nanoseconds * 1e-9
+
+        # report the status of the calculated frequencies
+        self.get_logger().info(f"Diagnostics: f_tf: {f_tf:.2f} Hz, f_tf_ships: {f_tf_ships:.2f} Hz, f_velocity: {f_velocity:.2f} Hz, f_runcontrols: {f_runcontrols:.2f} Hz")
+
+        # reset the counters
+        self.tr_tf_callback = 0
+        self.tr_tf_callback_ship_detected = 0
+        self.tr_velocity_callback_total = 0
+        self.tr_calculate_and_publish_references = 0
+        self.last_timestamp_reported = now
 
 
+
+
+        
 
     """
     Registers ships' poses in the poses dictionary and checks if all data is received.
     """
     def tf_callback(self, msg: TFMessage):
+        self.tr_tf_callback += 1
         for transform in msg.transforms:
             for i in range(0, self.n_boats):
                 if self.base_link_name[i] == transform.child_frame_id:
+                    self.tr_tf_callback_ship_detected += 1
                     self.poses[i] = transform
                     self.headings[i] = ros2_transform_to_yaw(transform)
                     if i == self.boat_nr: # Only control if its own pose is received
                         self.calculate_and_publish_references()
         
     def velocity_callback(self, msg: Float32MultiArray, boatnr: int):
+        self.tr_velocity_callback_total += 1
         self.velocities[boatnr] = msg.data
 
     def goal_callback(self, msg:PointStamped):
@@ -153,7 +186,7 @@ class SwarmControllerNode(Node):
         self.get_logger().info(f"New goal position: {self.goal_position}")
 
     def calculate_and_publish_references(self):
-
+        self.tr_calculate_and_publish_references += 1
         desired_distance = self.get_parameter('desired_distance').value
         separation_distance = self.get_parameter('separation_distance').value
         matching_factor = self.get_parameter('matching_factor').value
@@ -179,7 +212,7 @@ class SwarmControllerNode(Node):
         # Loop through all boats
         for boatnr in range(self.n_boats):
             # only proceed if its not self
-            if self.boats[boatnr] != self.vessel_id:
+            if self.boatNames[boatnr] != self.vessel_id:
                 # Check if the pose is not equal to None
                 if self.poses[boatnr] is not None:
 
