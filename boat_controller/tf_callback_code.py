@@ -13,8 +13,7 @@ class TFProcessor(Node):
             self.tf_callback,
             10
         )
-        #self.vessels = ['RAS_TN_DB','RAS_TN_OR','RAS_TN_GR']
-        self.vessels = ['RAS_TN_DB','RAS_TN_GR','RAS_TN_LB','RAS_TN_YE']
+        
         self.myname = self.get_namespace()
         self.myname = self.myname.replace('/','')
 
