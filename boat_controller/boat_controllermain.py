@@ -103,14 +103,14 @@ class SwarmControllerNode(Node):
             ) for boat in self.boats
         }
 
-        # Create distance publishers
-        self.distance_publishers = {
-            (boat1, boat2): self.create_publisher(
-                Float32,
-                f"/distance/{boat1}_{boat2}",
-                custom_qos_profile
-            ) for i, boat1 in enumerate(self.boats) for boat2 in self.boats[i+1:]
-        }
+        # # Create distance publishers
+        # self.distance_publishers = {
+        #     (boat1, boat2): self.create_publisher(
+        #         Float32,
+        #         f"/distance/{boat1}_{boat2}",
+        #         custom_qos_profile
+        #     ) for i, boat1 in enumerate(self.boats) for boat2 in self.boats[i+1:]
+        # }
 
         # Initialize state variables
         self.poses = {boat: None for boat in self.boats}
@@ -258,13 +258,13 @@ class SwarmControllerNode(Node):
 
                 self.get_logger().info(f"{boat} - Desired heading: {desired_heading}, Velocity reference: {desired_speed}")
 
-        if all(boat in positions for boat in self.boats):
-            self.publish_distances(positions)
+    #     if all(boat in positions for boat in self.boats):
+    #         self.publish_distances(positions)
 
-    def publish_distances(self, positions):
-        for (boat1, boat2), publisher in self.distance_publishers.items():
-            distance = np.linalg.norm(np.array(positions[boat1]) - np.array(positions[boat2]))
-            publisher.publish(Float32(data=distance))
+    # def publish_distances(self, positions):
+    #     for (boat1, boat2), publisher in self.distance_publishers.items():
+    #         distance = np.linalg.norm(np.array(positions[boat1]) - np.array(positions[boat2]))
+    #         publisher.publish(Float32(data=distance))
 
 
 def main(args=None):
