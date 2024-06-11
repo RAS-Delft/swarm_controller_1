@@ -4,7 +4,7 @@ from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from ament_index_python.packages import get_package_share_directory
 
-def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_LB','RAS_TN_GR','RAS_TN_YE']):
+def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_OR','RAS_TN_GR']):
     ld = LaunchDescription()
 
     # Print: start formation control launch generation:
