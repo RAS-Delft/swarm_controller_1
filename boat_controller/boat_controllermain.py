@@ -129,25 +129,24 @@ class SwarmControllerNode(Node):
         self.headings = np.zeros((len(self.boats), 1))
         self.velocities = np.zeros((len(self.boats), 3))
 
-
         self.goal_position = None  # Variable to store the clicked goal position
 
     """
     Registers ships' poses in the poses dictionary and checks if all data is received.
     """
-    def tf_callback(self, msg):
+    def tf_callback(self, msg: TFMessage):
         for transform in msg.transforms:
-            for i in range(0, self.max_boat_index):
+            for i in range(0, self.n_boats):
                 if self.base_link_name[i] == transform.child_frame_id:
                     self.poses[i] = transform
                     self.headings[i] = ros2_transform_to_yaw(transform)
-                    if i == self.boat_nr:
+                    if i == self.boat_nr: # Only control if its own pose is received
                         self.calculate_and_publish_references()
         
-    def velocity_callback(self, msg, boat):
-        self.velocities[boat] = msg.data
+    def velocity_callback(self, msg: Float32MultiArray, boatnr: int):
+        self.velocities[boatnr] = msg.data
 
-    def goal_callback(self, msg):
+    def goal_callback(self, msg:PointStamped):
         self.goal_position = np.array([msg.point.x, msg.point.y])
         self.get_logger().info(f"New goal position: {self.goal_position}")
 
