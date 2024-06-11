@@ -316,7 +316,13 @@ def main(args=None):
     try:
         rclpy.spin(swarm_controller)
     except KeyboardInterrupt:
-        print("Node interrupted by user.")
+        print(" Node interrupted by user. Stopping cleanly")
+    except Exception as e:
+        print(f" An unexpected error occurred: {e}")
+    finally:
+        if rclpy.ok():
+            swarm_controller.destroy_node()
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
