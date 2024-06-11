@@ -56,6 +56,7 @@ class SwarmControllerNode(Node):
                 ('min_speed', 0.01),
                 ('max_speed', 0.2),  # Reduced max speed for better control
                 ('max_heading_rate', 0.6)  # Maximum rate of change for heading (radians per update)
+                ('base_link_suffix', '/base_link')
             ]
         )
 
@@ -70,23 +71,24 @@ class SwarmControllerNode(Node):
             self.get_parameter('red_boat').value
         ]
 
-        # Set up subscribers
-        self.pose_subscribers = {
-            boat: self.create_subscription(
-                TransformStamped,
-                f"/{boat}/pose",
-                lambda msg, boat=boat: self.pose_callback(msg, boat),
-                custom_qos_profile
-            ) for boat in self.boats
-        }
-        self.heading_subscribers = {
-            boat: self.create_subscription(
-                Float32,
-                f"/{boat}/telemetry/heading",
-                lambda msg, boat=boat: self.heading_callback(msg, boat),
-                custom_qos_profile
-            ) for boat in self.boats
-        }
+        # Set max_boat_index to the number of boats
+        self.max_boat_index = len(self.boats)-1
+
+        # Figure out my name as namespace (remove the leading slash)
+        self.vessel_id = self.get_namespace().replace("/", "")
+
+        # Figure out which of the self.boats I am, and set it to self.boat_nr
+        self.boat_nr = self.boats.index(self.vessel_id)
+        self.get_logger().info(f"Vessel ID: {self.vessel_id}, Boat number: {self.boat_nr}")
+
+
+        # Set base_link_ suffix
+        self.base_link_suffix = self.get_parameter('base_link_suffix').value
+
+        # set base link name array
+        self.base_link_name = [f"/{boat}{self.base_link_suffix}" for boat in self.boats]
+
+        # Make 1 pose subscriber on /tf
         self.tf_subscriber = self.create_subscription(
             TFMessage,
             '/tf',
@@ -108,7 +110,7 @@ class SwarmControllerNode(Node):
             PointStamped,
             '/clicked_point',
             self.goal_callback,
-            custom_qos_profile
+            10
         )
 
         # Set up publishers
@@ -126,15 +128,6 @@ class SwarmControllerNode(Node):
                 custom_qos_profile
             ) for boat in self.boats
         }
-
-        # # Create distance publishers
-        # self.distance_publishers = {
-        #     (boat1, boat2): self.create_publisher(
-        #         Float32,
-        #         f"/distance/{boat1}_{boat2}",
-        #         custom_qos_profile
-        #     ) for i, boat1 in enumerate(self.boats) for boat2 in self.boats[i+1:]
-        # }
 
         # Initialize state variables
         self.poses = {boat: None for boat in self.boats}
@@ -175,120 +168,109 @@ class SwarmControllerNode(Node):
 
         positions = {boat: (pose.translation.x, pose.translation.y) for boat, pose in self.poses.items() if pose is not None}
         velocities = {boat: np.array([vel[0], vel[1]]) for boat, vel in self.velocities.items() if vel is not None}
+        
 
-        for boat in self.boats:
-            if boat in positions:
-                position = positions[boat]
+        # check if own position is not None
+        if positions[self.boat_nr] is not None:
+            
+            if boat in velocities:
+                velocity = velocities[boat]
             else:
-                position = None
-            
-            if position is not None:
-                if boat in velocities:
-                    velocity = velocities[boat]
-                else:
-                    velocity = np.array([0.0, 0.0])
+                velocity = np.array([0.0, 0.0])
 
-                # Initialize forces
-                separation_force = np.array([0.0, 0.0])
-                alignment_force = np.array([0.0, 0.0])
-                cohesion_force = np.array([0.0, 0.0])
-                goal_force = np.array([0.0, 0.0])
-                neighbor_count = 0
-                close_neighbor_count = 0
+            # Initialize forces
+            separation_force = np.array([0.0, 0.0])
+            alignment_force = np.array([0.0, 0.0])
+            cohesion_force = np.array([0.0, 0.0])
+            goal_force = np.array([0.0, 0.0])
+            neighbor_count = 0
+            close_neighbor_count = 0
 
-                for other_boat in self.boats:
-                    if other_boat != boat:
-                        if other_boat in positions:
-                            other_position = positions[other_boat]
-                            distance = np.linalg.norm(np.array(position) - np.array(other_position))
+            for other_boat in self.boats:
+                if other_boat != boat:
+                    if other_boat in positions:
+                        other_position = positions[other_boat]
+                        distance = np.linalg.norm(np.array(position) - np.array(other_position))
 
-                            # Apply different logic based on distance
-                            if distance < separation_distance:
-                                separation_force += (np.array(position) - np.array(other_position)) * ((separation_distance - distance)**2)
-                                close_neighbor_count += 1
-                            elif other_boat in velocities:
-                                other_velocity = velocities[other_boat]
-                                if separation_distance <= distance <= desired_distance:
-                                    alignment_force += other_velocity
-                                    neighbor_count += 1
-                                else:
-                                    alignment_force += other_velocity
-                                    cohesion_force += (np.array(other_position) - np.array(position)) * ((distance - desired_distance) / desired_distance)
-                                    neighbor_count += 1
-                            
+                        # Apply different logic based on distance
+                        if distance < separation_distance:
+                            separation_force += (np.array(position) - np.array(other_position)) * ((separation_distance - distance)**2)
+                            close_neighbor_count += 1
+                        elif other_boat in velocities:
+                            other_velocity = velocities[other_boat]
                             if separation_distance <= distance <= desired_distance:
-                                cohesion_force = np.array([0.0, 0.0])
+                                alignment_force += other_velocity
+                                neighbor_count += 1
+                            else:
+                                alignment_force += other_velocity
+                                cohesion_force += (np.array(other_position) - np.array(position)) * ((distance - desired_distance) / desired_distance)
+                                neighbor_count += 1
+                        
+                        if separation_distance <= distance <= desired_distance:
+                            cohesion_force = np.array([0.0, 0.0])
 
-                if neighbor_count > 0:
-                    alignment_force /= neighbor_count
-                    alignment_force = (alignment_force - velocity) * matching_factor
+            if neighbor_count > 0:
+                alignment_force /= neighbor_count
+                alignment_force = (alignment_force - velocity) * matching_factor
 
-                    cohesion_force /= neighbor_count
-                    cohesion_force = cohesion_force * centering_factor
+                cohesion_force /= neighbor_count
+                cohesion_force = cohesion_force * centering_factor
 
-                if close_neighbor_count > 0:
-                    separation_force = separation_force * avoid_factor
-                else:
-                    separation_force = np.array([0.0, 0.0])
+            if close_neighbor_count > 0:
+                separation_force = separation_force * avoid_factor
+            else:
+                separation_force = np.array([0.0, 0.0])
 
-                if self.goal_position is not None:
-                    goal_force = (self.goal_position - np.array(position)) * goal_factor
-            
-                desired_velocity = velocity + alignment_force + cohesion_force + separation_force + goal_force
-                desired_speed = np.linalg.norm(desired_velocity)
+            if self.goal_position is not None:
+                goal_force = (self.goal_position - np.array(position)) * goal_factor
+        
+            desired_velocity = velocity + alignment_force + cohesion_force + separation_force + goal_force
+            desired_speed = np.linalg.norm(desired_velocity)
 
-                if desired_speed > 0:
-                    desired_heading = np.arctan2(desired_velocity[1], desired_velocity[0])
-                else:
-                    desired_heading = self.headings[boat]
+            if desired_speed > 0:
+                desired_heading = np.arctan2(desired_velocity[1], desired_velocity[0])
+            else:
+                desired_heading = self.headings[boat]
 
-                if boat in self.headings and self.headings[boat] is not None:
-                    current_heading = self.headings[boat]
-                    heading_change = desired_heading - current_heading
-                    if heading_change > np.pi:
-                        heading_change -= 2 * np.pi
-                    elif heading_change < -np.pi:
-                        heading_change += 2 * np.pi
+            if boat in self.headings and self.headings[boat] is not None:
+                current_heading = self.headings[boat]
+                heading_change = desired_heading - current_heading
+                if heading_change > np.pi:
+                    heading_change -= 2 * np.pi
+                elif heading_change < -np.pi:
+                    heading_change += 2 * np.pi
 
-                    if abs(heading_change) > max_heading_rate:
-                        heading_change = np.sign(heading_change) * max_heading_rate
+                if abs(heading_change) > max_heading_rate:
+                    heading_change = np.sign(heading_change) * max_heading_rate
 
-                    desired_heading = current_heading + heading_change
+                desired_heading = current_heading + heading_change
 
-                if desired_speed > max_speed:
-                    desired_velocity = (desired_velocity / desired_speed) * max_speed
-                    desired_speed = max_speed
-                elif desired_speed < min_speed and desired_speed != 0:
-                    desired_velocity = (desired_velocity / desired_speed) * min_speed
-                    desired_speed = min_speed
+            if desired_speed > max_speed:
+                desired_velocity = (desired_velocity / desired_speed) * max_speed
+                desired_speed = max_speed
+            elif desired_speed < min_speed and desired_speed != 0:
+                desired_velocity = (desired_velocity / desired_speed) * min_speed
+                desired_speed = min_speed
 
-                if close_neighbor_count > 0:
-                    separation_velocity = separation_force + velocity
-                    separation_speed = np.linalg.norm(separation_velocity)
-                    if separation_speed > max_speed:
-                        separation_velocity = (separation_velocity / separation_speed) * max_speed
-                    elif separation_speed < min_speed:
-                        separation_velocity = (separation_velocity / separation_speed) * min_speed
-                    desired_velocity = separation_velocity
+            if close_neighbor_count > 0:
+                separation_velocity = separation_force + velocity
+                separation_speed = np.linalg.norm(separation_velocity)
+                if separation_speed > max_speed:
+                    separation_velocity = (separation_velocity / separation_speed) * max_speed
+                elif separation_speed < min_speed:
+                    separation_velocity = (separation_velocity / separation_speed) * min_speed
+                desired_velocity = separation_velocity
 
-                msg_heading = Float32(data=desired_heading)
-                msg_speed = Float32MultiArray(data=[desired_speed, 0.0, 0.0])
+            msg_heading = Float32(data=desired_heading)
+            msg_speed = Float32MultiArray(data=[desired_speed, 0.0, 0.0])
 
-                if desired_heading is not None:
-                    self.heading_publishers[boat].publish(msg_heading)
+            if desired_heading is not None:
+                self.heading_publishers[boat].publish(msg_heading)
 
-                if desired_speed is not None:
-                    self.velocity_publishers[boat].publish(msg_speed)
+            if desired_speed is not None:
+                self.velocity_publishers[boat].publish(msg_speed)
 
-                self.get_logger().info(f"{boat} - Desired heading: {desired_heading}, Velocity reference: {desired_speed}")
-
-    #     if all(boat in positions for boat in self.boats):
-    #         self.publish_distances(positions)
-
-    # def publish_distances(self, positions):
-    #     for (boat1, boat2), publisher in self.distance_publishers.items():
-    #         distance = np.linalg.norm(np.array(positions[boat1]) - np.array(positions[boat2]))
-    #         publisher.publish(Float32(data=distance))
+            self.get_logger().info(f"{boat} - Desired heading: {desired_heading}, Velocity reference: {desired_speed}")
 
 
 def main(args=None):
