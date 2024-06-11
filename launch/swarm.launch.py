@@ -28,25 +28,23 @@ def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_LB','RAS_TN_GR'
         )
         ld.add_action(turtleboat_node)
 
-        # Start tf callback
-        tf_callback_node = Node(
-            package='tf_callback',
-            executable='tf_callback_code',
-            name='tf_callback',
-            arguments=[vesselids],
+        # Start Boid controller for each vessel
+        boid_controller_node = Node(
+            package=['boat_controller'],
+            executable='boat_controllermain',
+            name='boid_controller',
             namespace=vesselid,
             output='screen',
             emulate_tty=True,
         )
-        ld.add_action(tf_callback_node)
-        
+        ld.add_action(boid_controller_node)
+
         # Start vessel heading controller for each vessel
         heading_controller_node = Node(
             package=['ras_ros_core_control_modules'],
             executable='heading_controller',
             name='heading_controller',
             namespace=vesselid,
-            arguments=[vesselid],
             output='screen',
             emulate_tty=True,
         )
@@ -58,7 +56,6 @@ def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_LB','RAS_TN_GR'
             executable='surge_vel_controller',
             name='surge_velocity_controller',
             namespace=vesselid,
-            arguments=[vesselid],
             output='screen',
             emulate_tty=True,
         )
@@ -70,7 +67,6 @@ def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_LB','RAS_TN_GR'
             executable='TN_control_effort_allocator_nomoto',
             name='thrust_allocator',
             namespace=vesselid,
-            arguments=[vesselid],
             output='screen',
             emulate_tty=True,
         )
@@ -82,13 +78,12 @@ def generate_launch_description(vesselids = ['RAS_TN_DB','RAS_TN_LB','RAS_TN_GR'
             executable='vel_differentiator',
             name='velocity_differentiator',
             namespace=vesselid,
-            arguments=[vesselid],
             output='screen',
             emulate_tty=True,
         )
         ld.add_action(velocity_differentiator_node)
 
-    # Start Rviz2 launcher
+    # Start Rviz2 launcher using the configuration file from ras_urdf_common
     rviz2launchdescription = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([
             get_package_share_directory('ras_urdf_common'),
