@@ -20,7 +20,7 @@ def generate_launch_description():
     # Print: start formation control launch generation:
     print("Start formation control launch generation")
     boat_controller_dir = get_package_share_directory('boat_controller')
-    included_launch = IncludeLaunchDescription(PythonLaunchDescriptionSource(boat_controller_dir + '/single_boid.launch.py'))
+    included_launch = IncludeLaunchDescription(PythonLaunchDescriptionSource(boat_controller_dir + '/launch' + '/single_boid.launch.py'))
                 
     ld.add_action(included_launch)
 
