@@ -20,11 +20,6 @@ def generate_launch_description():
     if vesselid not in known_vessel_ids:
         raise ValueError("Unknown vessel id: ", vesselid,'" Please check the vessel id in the environment variable $VESSEL_ID.')
 
-    # Print: start formation control launch generation:
-    core_control_dir = get_package_share_directory('ras_ros_core_control_modules')
-    utils_launch = IncludeLaunchDescription(PythonLaunchDescriptionSource(core_control_dir + '/fleet_geo_utils.launch.py'))
-    ld.add_action(utils_launch)
-
     # Start Boid controller for each vessel
     boid_controller_node = Node(
         package=['boat_controller'],
